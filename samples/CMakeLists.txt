@@ -66,12 +66,14 @@ file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/h265SampleFrames" DESTINATION .)
 add_executable(
   kvsWebrtcClientMaster
   Common.c
+  CustomWsSignal.c
   kvsWebRTCClientMaster.c)
 target_link_libraries(kvsWebrtcClientMaster kvsWebrtcClient kvsWebrtcSignalingClient ${EXTRA_DEPS} kvsCommonLws kvspicUtils websockets)
 
 add_executable(
   kvsWebrtcClientViewer
   Common.c
+  CustomWsSignalViewer.c
   kvsWebRTCClientViewer.c)
 target_link_libraries(kvsWebrtcClientViewer kvsWebrtcClient kvsWebrtcSignalingClient ${EXTRA_DEPS} kvsCommonLws kvspicUtils websockets)
 

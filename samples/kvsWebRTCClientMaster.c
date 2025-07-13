@@ -1,4 +1,8 @@
 #include "Samples.h"
+#include "CustomWsSignal.h"
+
+/* 前向声明，供 onConnectionStateChange 调用 */
+PVOID mediaSenderRoutine(PVOID);
 
 extern PSampleConfiguration gSampleConfiguration;
 
@@ -15,6 +19,7 @@ INT32 main(INT32 argc, CHAR* argv[])
 
     SET_INSTRUMENTED_ALLOCATORS();
     UINT32 logLevel = setLogLevel();
+    printf("logLevel=%d\n", logLevel);
 
 #ifndef _WIN32
     signal(SIGINT, sigintHandler);
@@ -27,7 +32,8 @@ INT32 main(INT32 argc, CHAR* argv[])
     pChannelName = argc > 1 ? argv[1] : SAMPLE_CHANNEL_NAME;
 #endif
 
-    CHK_STATUS(createSampleConfiguration(pChannelName, SIGNALING_CHANNEL_ROLE_TYPE_MASTER, TRUE, TRUE, logLevel, &pSampleConfiguration));
+    /* 改为不使用 AWS TURN 配置，避免 initializePeerConnection 调用 signalingClientGetIceConfigInfoCount 失败 */
+    CHK_STATUS(createSampleConfiguration(pChannelName, SIGNALING_CHANNEL_ROLE_TYPE_MASTER, TRUE, FALSE, logLevel, &pSampleConfiguration));
 
     if (argc > 3) {
         if (!STRCMP(argv[3], AUDIO_CODEC_NAME_OPUS)) {
@@ -94,12 +100,24 @@ INT32 main(INT32 argc, CHAR* argv[])
     CHK_STATUS(initKvsWebRtc());
     DLOGI("[KVS Master] KVS WebRTC initialization completed successfully");
 
-    PROFILE_CALL_WITH_START_END_T_OBJ(
-        retStatus = initSignaling(pSampleConfiguration, SAMPLE_MASTER_CLIENT_ID), pSampleConfiguration->signalingClientMetrics.signalingStartTime,
-        pSampleConfiguration->signalingClientMetrics.signalingEndTime, pSampleConfiguration->signalingClientMetrics.signalingCallTime,
-        "Initialize signaling client and connect to the signaling channel");
+    /* --- 使用 SampleStreamingSession to include transceivers --- */
+    PSampleStreamingSession pSession = NULL;
+    CHK_STATUS(createSampleStreamingSession(pSampleConfiguration, "viewer", TRUE, &pSession));
+    pSampleConfiguration->sampleStreamingSessionList[pSampleConfiguration->streamingSessionCount++] = pSession;
+    PRtcPeerConnection pc = pSession->pPeerConnection;
 
-    DLOGI("[KVS Master] Channel %s set up done ", pChannelName);
+    /* 先启动媒体发送线程（包含音频和视频） */
+#if 0
+CHK_STATUS(THREAD_CREATE(&pSampleConfiguration->mediaSenderTid,
+                         mediaSenderRoutine,
+                         (PVOID) pSampleConfiguration));
+#endif
+
+    /* 再启动自定义 WebSocket 信令（阻塞直到 appTerminateFlag 置 TRUE） */
+    CHK_STATUS(runWsSignalingMaster(pc, pSampleConfiguration,
+             argc > 2 ? argv[2] : "ws://127.0.0.1:8080/ws", pChannelName, "master"));
+
+    DLOGI("[KVS Master] WebSocket signaling finished");
 
     // Checking for termination
     CHK_STATUS(sessionCleanupWait(pSampleConfiguration));
@@ -120,16 +138,7 @@ CleanUp:
             THREAD_JOIN(pSampleConfiguration->mediaSenderTid, NULL);
         }
 
-        retStatus = signalingClientGetMetrics(pSampleConfiguration->signalingClientHandle, &signalingClientMetrics);
-        if (retStatus == STATUS_SUCCESS) {
-            logSignalingClientStats(&signalingClientMetrics);
-        } else {
-            DLOGE("[KVS Master] signalingClientGetMetrics() operation returned status code: 0x%08x", retStatus);
-        }
-        retStatus = freeSignalingClient(&pSampleConfiguration->signalingClientHandle);
-        if (retStatus != STATUS_SUCCESS) {
-            DLOGE("[KVS Master] freeSignalingClient(): operation returned status code: 0x%08x", retStatus);
-        }
+        /* metrics / freeSignalingClient 已移除 */
 
         retStatus = freeSampleConfiguration(&pSampleConfiguration);
         if (retStatus != STATUS_SUCCESS) {
@@ -211,6 +220,7 @@ PVOID sendVideoPackets(PVOID args)
         encoderStats.height = 480;
         encoderStats.targetBitrate = 262000;
         frame.presentationTs += SAMPLE_VIDEO_FRAME_DURATION;
+        printf("[Video] idx=%u size=%u ts=%" PRIu64 "\n", fileIndex, frameSize, frame.presentationTs);
         MUTEX_LOCK(pSampleConfiguration->streamingSessionListReadLock);
         for (i = 0; i < pSampleConfiguration->streamingSessionCount; ++i) {
             status = writeFrame(pSampleConfiguration->sampleStreamingSessionList[i]->pVideoRtcRtpTransceiver, &frame);
@@ -282,6 +292,7 @@ PVOID sendAudioPackets(PVOID args)
         CHK_STATUS(readFrameFromDisk(frame.frameData, &frameSize, filePath));
 
         frame.presentationTs += SAMPLE_AUDIO_FRAME_DURATION;
+        DLOGI("[Audio] idx=%u size=%u ts=%" PRIu64, fileIndex, frameSize, frame.presentationTs);
 
         MUTEX_LOCK(pSampleConfiguration->streamingSessionListReadLock);
         for (i = 0; i < pSampleConfiguration->streamingSessionCount; ++i) {

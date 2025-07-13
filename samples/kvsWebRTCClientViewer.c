@@ -1,4 +1,5 @@
 #include "Samples.h"
+#include "CustomWsSignal.h"
 
 extern PSampleConfiguration gSampleConfiguration;
 
@@ -52,12 +53,7 @@ INT32 main(INT32 argc, CHAR* argv[])
     signal(SIGINT, sigintHandler);
 #endif
 
-#ifdef IOT_CORE_ENABLE_CREDENTIALS
-    CHK_ERR((pChannelName = argc > 1 ? argv[1] : GETENV(IOT_CORE_THING_NAME)) != NULL, STATUS_INVALID_OPERATION,
-            "AWS_IOT_CORE_THING_NAME must be set");
-#else
     pChannelName = argc > 1 ? argv[1] : SAMPLE_CHANNEL_NAME;
-#endif
 
     if (argc > 2) {
         if (!STRCMP(argv[2], AUDIO_CODEC_NAME_OPUS)) {
@@ -81,7 +77,8 @@ INT32 main(INT32 argc, CHAR* argv[])
         }
     }
 
-    CHK_STATUS(createSampleConfiguration(pChannelName, SIGNALING_CHANNEL_ROLE_TYPE_VIEWER, TRUE, TRUE, logLevel, &pSampleConfiguration));
+    /* Viewer 端同样禁用 TURN */
+    CHK_STATUS(createSampleConfiguration(pChannelName, SIGNALING_CHANNEL_ROLE_TYPE_VIEWER, TRUE, FALSE, logLevel, &pSampleConfiguration));
     pSampleConfiguration->mediaType = SAMPLE_STREAMING_AUDIO_VIDEO;
     pSampleConfiguration->audioCodec = audioCodec;
     pSampleConfiguration->videoCodec = videoCodec;
@@ -89,6 +86,26 @@ INT32 main(INT32 argc, CHAR* argv[])
     // Initialize KVS WebRTC. This must be done before anything else, and must only be done once.
     CHK_STATUS(initKvsWebRtc());
     DLOGI("[KVS Viewer] KVS WebRTC initialization completed successfully");
+
+    /* --- 使用自定义 WebSocket 信令 --- */
+    PSampleStreamingSession pSession = NULL;
+    CHK_STATUS(createSampleStreamingSession(pSampleConfiguration, NULL, FALSE, &pSession));
+    pSampleConfiguration->sampleStreamingSessionList[pSampleConfiguration->streamingSessionCount++] = pSession;
+    PRtcPeerConnection pc = pSession->pPeerConnection;
+
+#ifdef ENABLE_DATA_CHANNEL
+    /* 如果需要可在 runWsSignalingViewer 内部处理 datachannel 回调 */
+#endif
+
+    /* 注册帧回调，便于在控制台看到收到的 RTP 解包 */
+    CHK_STATUS(transceiverOnFrame(pSession->pVideoRtcRtpTransceiver, (UINT64) pSession, sampleVideoFrameHandler));
+    CHK_STATUS(transceiverOnFrame(pSession->pAudioRtcRtpTransceiver, (UINT64) pSession, sampleAudioFrameHandler));
+
+    /* 阻塞直到终止 */
+    CHK_STATUS(runWsSignalingViewer(pc, pSampleConfiguration,
+              argc > 2 ? argv[2] : "ws://127.0.0.1:8080/ws", pChannelName, "viewer"));
+
+    goto CleanUp;
 
 #ifdef ENABLE_DATA_CHANNEL
     pSampleConfiguration->onDataChannel = onDataChannel;

@@ -72,14 +72,14 @@ extern "C" {
 #define DATA_CHANNEL_MESSAGE_TEMPLATE                                                                                                                \
     "{\"content\":\"%s\",\"firstMessageFromViewerTs\":\"%s\",\"firstMessageFromMasterTs\":\"%s\",\"secondMessageFromViewerTs\":\"%s\","              \
     "\"secondMessageFromMasterTs\":\"%s\",\"lastMessageFromViewerTs\":\"%s\" }"
-#define PEER_CONNECTION_METRICS_JSON_TEMPLATE "{\"peerConnectionStartTime\": %llu, \"peerConnectionEndTime\": %llu }"
+#define PEER_CONNECTION_METRICS_JSON_TEMPLATE "{\"peerConnectionStartTime\": %lu, \"peerConnectionEndTime\": %lu }"
 #define SIGNALING_CLIENT_METRICS_JSON_TEMPLATE                                                                                                       \
-    "{\"signalingStartTime\": %llu, \"signalingEndTime\": %llu, \"offerReceiptTime\": %llu, \"sendAnswerTime\": %llu, "                              \
-    "\"describeChannelStartTime\": %llu, \"describeChannelEndTime\": %llu, \"getSignalingChannelEndpointStartTime\": %llu, "                         \
-    "\"getSignalingChannelEndpointEndTime\": %llu, \"getIceServerConfigStartTime\": %llu, \"getIceServerConfigEndTime\": %llu, "                     \
-    "\"getTokenStartTime\": %llu, \"getTokenEndTime\": %llu, \"createChannelStartTime\": %llu, \"createChannelEndTime\": %llu, "                     \
-    "\"connectStartTime\": %llu, \"connectEndTime\": %llu }"
-#define ICE_AGENT_METRICS_JSON_TEMPLATE "{\"candidateGatheringStartTime\": %llu, \"candidateGatheringEndTime\": %llu }"
+    "{\"signalingStartTime\": %lu, \"signalingEndTime\": %lu, \"offerReceiptTime\": %lu, \"sendAnswerTime\": %lu, "                              \
+    "\"describeChannelStartTime\": %lu, \"describeChannelEndTime\": %lu, \"getSignalingChannelEndpointStartTime\": %lu, "                         \
+    "\"getSignalingChannelEndpointEndTime\": %lu, \"getIceServerConfigStartTime\": %lu, \"getIceServerConfigEndTime\": %lu, "                     \
+    "\"getTokenStartTime\": %lu, \"getTokenEndTime\": %lu, \"createChannelStartTime\": %lu, \"createChannelEndTime\": %lu, "                     \
+    "\"connectStartTime\": %lu, \"connectEndTime\": %lu }"
+#define ICE_AGENT_METRICS_JSON_TEMPLATE "{\"candidateGatheringStartTime\": %lu, \"candidateGatheringEndTime\": %lu }"
 
 #define MAX_DATA_CHANNEL_METRICS_MESSAGE_SIZE     260 // strlen(DATA_CHANNEL_MESSAGE_TEMPLATE) + 20 * 5
 #define MAX_PEER_CONNECTION_METRICS_MESSAGE_SIZE  105 // strlen(PEER_CONNECTION_METRICS_JSON_TEMPLATE) + 20 * 2

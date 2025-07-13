@@ -1,7 +1,11 @@
 #define LOG_CLASS "WebRtcSamples"
 #include "Samples.h"
+#include <stdio.h>
 
 PSampleConfiguration gSampleConfiguration = NULL;
+
+/* 前向声明，使编译器在 onConnectionStateChange 中识别 */
+PVOID mediaSenderRoutine(PVOID);
 
 VOID sigintHandler(INT32 sigNum)
 {
@@ -53,6 +57,11 @@ VOID onConnectionStateChange(UINT64 customData, RTC_PEER_CONNECTION_STATE newSta
 
             if (pSampleConfiguration->enableIceStats) {
                 CHK_LOG_ERR(logSelectedIceCandidatesInformation(pSampleStreamingSession));
+            }
+
+            /* Start media thread immediately upon ICE Connected */
+            if (!ATOMIC_EXCHANGE_BOOL(&pSampleConfiguration->mediaThreadStarted, TRUE)) {
+                THREAD_CREATE(&pSampleConfiguration->mediaSenderTid, mediaSenderRoutine, (PVOID) pSampleConfiguration);
             }
             break;
         case RTC_PEER_CONNECTION_STATE_FAILED:
@@ -166,9 +175,12 @@ PVOID mediaSenderRoutine(PVOID customData)
     pSampleConfiguration->audioSenderTid = INVALID_TID_VALUE;
 
     MUTEX_LOCK(pSampleConfiguration->sampleConfigurationObjLock);
+    // (删除等待 connected 的循环，推流线程立即继续)
+    #if 0
     while (!ATOMIC_LOAD_BOOL(&pSampleConfiguration->connected) && !ATOMIC_LOAD_BOOL(&pSampleConfiguration->appTerminateFlag)) {
         CVAR_WAIT(pSampleConfiguration->cvar, pSampleConfiguration->sampleConfigurationObjLock, 5 * HUNDREDS_OF_NANOS_IN_A_SECOND);
     }
+    #endif
     MUTEX_UNLOCK(pSampleConfiguration->sampleConfigurationObjLock);
 
     CHK(!ATOMIC_LOAD_BOOL(&pSampleConfiguration->appTerminateFlag), retStatus);
@@ -287,7 +299,7 @@ STATUS respondWithAnswer(PSampleStreamingSession pSampleStreamingSession)
     STRNCPY(message.peerClientId, pSampleStreamingSession->peerId, MAX_SIGNALING_CLIENT_ID_LEN);
     message.payloadLen = (UINT32) STRLEN(message.payload);
     // SNPRINTF appends null terminator, so we do not manually add it
-    SNPRINTF(message.correlationId, MAX_CORRELATION_ID_LEN, "%llu_%llu", GETTIME(), ATOMIC_INCREMENT(&pSampleStreamingSession->correlationIdPostFix));
+    SNPRINTF(message.correlationId, MAX_CORRELATION_ID_LEN, "%lu_%lu", GETTIME(), ATOMIC_INCREMENT(&pSampleStreamingSession->correlationIdPostFix));
     DLOGD("Responding With Answer With correlationId: %s", message.correlationId);
     CHK_STATUS(sendSignalingMessage(pSampleStreamingSession, &message));
 
@@ -644,13 +656,13 @@ CleanUp:
 VOID sampleVideoFrameHandler(UINT64 customData, PFrame pFrame)
 {
     UNUSED_PARAM(customData);
-    DLOGV("Video Frame received. TrackId: %" PRIu64 ", Size: %u, Flags %u", pFrame->trackId, pFrame->size, pFrame->flags);
+    printf("[VideoRecv] track=%" PRIu64 " size=%u ts=%" PRIu64 " flags=%u\n", pFrame->trackId, pFrame->size, pFrame->presentationTs, pFrame->flags);
 }
 
 VOID sampleAudioFrameHandler(UINT64 customData, PFrame pFrame)
 {
     UNUSED_PARAM(customData);
-    DLOGV("Audio Frame received. TrackId: %" PRIu64 ", Size: %u, Flags %u", pFrame->trackId, pFrame->size, pFrame->flags);
+    printf("[AudioRecv] track=%" PRIu64 " size=%u ts=%" PRIu64 " flags=%u\n", pFrame->trackId, pFrame->size, pFrame->presentationTs, pFrame->flags);
 }
 
 VOID sampleFrameHandler(UINT64 customData, PFrame pFrame)

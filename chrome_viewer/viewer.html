@@ -1,0 +1,57 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>KVS Master Viewer</title>
+<video id="remote" autoplay playsinline controls style="width:640px;height:360px;background:#000"></video>
+<script>
+(async () => {
+  /* ----------- 参数自行调整 ----------- */
+  const room   = 'demo';               // 与 Master 一致
+  const uid    = 'viewer_' + Math.random().toString(36).substr(2, 6);
+  const wsUrl  = `ws://127.0.0.1:8080/ws?room=${room}&uid=${uid}&role=viewer3`;
+
+  /* -------- WebSocket 信令 -------- */
+  const ws = new WebSocket(wsUrl);
+  ws.addEventListener('open', () =>
+    ws.send(JSON.stringify({ type:'JOIN', room, uid, role:'viewer' })));
+
+  /* -------- WebRTC -------- */
+  const pc = new RTCPeerConnection({ iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' }
+  ]});
+  pc.ontrack = ({ streams:[s] }) => {
+    console.log('[ontrack]', s);
+    document.getElementById('remote').srcObject = s;
+  };
+  pc.onicecandidate = e => {
+    if (e.candidate) {
+      ws.send(JSON.stringify({ type:'ICE_CANDIDATE', room, uid,
+        candidate:e.candidate.candidate }));
+    }
+  };
+
+  /* -------- 处理来自 Bridge 的信令 -------- */
+  ws.addEventListener('message', async ({ data }) => {
+    const msg = JSON.parse(data);
+    switch (msg.type) {
+      case 'SDP_OFFER': {
+        console.log('[WS] offer ↓', msg);
+        await pc.setRemoteDescription({ type:'offer', sdp:msg.sdp });
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        ws.send(JSON.stringify({ type:'SDP_ANSWER', room, uid, sdp:answer.sdp }));
+        break;
+      }
+      case 'ICE_CANDIDATE': {
+        if (msg.candidate && msg.candidate.trim() !== '') {
+          pc.addIceCandidate({
+            candidate:    msg.candidate,
+            sdpMid:       '0',  // 所有媒体都在 BUNDLE m=0
+            sdpMLineIndex: 0
+          }).catch(console.error);
+        }
+        break;
+      }
+    }
+  });
+})();
+</script>
