@@ -1,7 +1,9 @@
 package main
 
 import (
+    "crypto/tls"
     "encoding/json"
+    "flag"
     "fmt"
     "log"
     "net/http"
@@ -12,7 +14,7 @@ import (
     "github.com/pion/webrtc/v3"
 )
 
-/**************** 信令结构 ****************/ 
+/**************** 信令结构 ****************/
 
 type Signal struct {
     Type      string `json:"type"`
@@ -24,7 +26,7 @@ type Signal struct {
     Role      string `json:"role,omitempty"`
 }
 
-/**************** 房间与 Peer ****************/ 
+/**************** 房间与 Peer ****************/
 
 type Peer struct {
     uid         string
@@ -50,7 +52,7 @@ var (
     api      *webrtc.API
 )
 
-/**************** WebSocket 入口 ****************/ 
+/**************** WebSocket 入口 ****************/
 
 func wsHandler(w http.ResponseWriter, r *http.Request) {
     roomName := r.URL.Query().Get("room")
@@ -70,7 +72,7 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
     p.readLoop()
 }
 
-/**************** 房间管理 ****************/ 
+/**************** 房间管理 ****************/
 
 func getRoom(name string) *Room {
     roomsLk.Lock()
@@ -83,7 +85,7 @@ func getRoom(name string) *Room {
     return r
 }
 
-/**************** Peer I/O ****************/ 
+/**************** Peer I/O ****************/
 
 func (p *Peer) writeLoop() {
     for msg := range p.send {
@@ -123,7 +125,7 @@ func (p *Peer) readLoop() {
     }
 }
 
-/******** JOIN ********/ 
+/******** JOIN ********/
 
 func (p *Peer) handleJoin(sig Signal) {
     if strings.ToLower(sig.Role) == "kvs" {
@@ -134,7 +136,7 @@ func (p *Peer) handleJoin(sig Signal) {
     }
 }
 
-/******** SDP 处理 ********/ 
+/******** SDP 处理 ********/
 
 func (p *Peer) handleOffer(sig Signal) {
     if p.isKvsMaster {
@@ -191,7 +193,7 @@ func (p *Peer) handleAnswer(sig Signal) {
     }
 }
 
-/******** ICE candidate ********/ 
+/******** ICE candidate ********/
 
 func (p *Peer) handleCandidate(sig Signal) {
     if p.pc == nil {
@@ -200,7 +202,7 @@ func (p *Peer) handleCandidate(sig Signal) {
     _ = p.pc.AddICECandidate(webrtc.ICECandidateInit{Candidate: sig.Candidate})
 }
 
-/******** Room helpers ********/ 
+/******** Room helpers ********/
 
 func (r *Room) setMaster(p *Peer) {
     r.lock.Lock()
@@ -241,7 +243,7 @@ func (p *Peer) closePeer() {
     close(p.send)
 }
 
-/******** Track relay ********/ 
+/******** Track relay ********/
 
 func (r *Room) getOrCreateRelay(remote *webrtc.TrackRemote, key string) (*webrtc.TrackLocalStaticRTP, error) {
     r.lock.Lock()
@@ -268,7 +270,7 @@ func (r *Room) getOrCreateRelay(remote *webrtc.TrackRemote, key string) (*webrtc
     return rt, nil
 }
 
-/******** viewer 主动发送 offer ********/ 
+/******** viewer 主动发送 offer ********/
 
 func (p *Peer) sendOffer(r *Room) {
     p.pc = newPeerConnection()
@@ -288,7 +290,7 @@ func (p *Peer) sendOffer(r *Room) {
     p.send <- payload
 }
 
-/******** PeerConnection 创建 ********/ 
+/******** PeerConnection 创建 ********/
 
 func newPeerConnection() *webrtc.PeerConnection {
     conf := webrtc.Configuration{ICEServers: []webrtc.ICEServer{{URLs: []string{"stun:stun.l.google.com:19302"}}}}
@@ -299,14 +301,36 @@ func newPeerConnection() *webrtc.PeerConnection {
     return pc
 }
 
-/******** main ********/ 
+/******** main ********/
 
 func main() {
     me := &webrtc.MediaEngine{}
     _ = me.RegisterDefaultCodecs()
     api = webrtc.NewAPI(webrtc.WithMediaEngine(me))
 
+    // 证书参数
+    certPath := flag.String("cert", "certs/server.crt", "TLS cert")
+    keyPath := flag.String("key", "certs/server.key", "TLS key")
+    addrHTTP := flag.String("http", ":8080", "HTTP listen")
+    addrHTTPS := flag.String("https", ":443", "HTTPS listen")
+    flag.Parse()
+
     http.HandleFunc("/ws", wsHandler)
-    log.Println("Signaling+Relay running on :8080/ws")
-    log.Fatal(http.ListenAndServe(":8080", nil))
+    // 静态文件目录 static
+    http.Handle("/", http.FileServer(http.Dir("./static")))
+
+    // HTTPS goroutine
+    go func() {
+        if _, err := tls.LoadX509KeyPair(*certPath, *keyPath); err != nil {
+            log.Printf("[WARN] unable to load cert/key (%v), skip HTTPS", err)
+            return
+        }
+        log.Printf("HTTPS/WebSocket Secure listening on %s", *addrHTTPS)
+        if err := http.ListenAndServeTLS(*addrHTTPS, *certPath, *keyPath, nil); err != nil {
+            log.Fatalf("HTTPS failed: %v", err)
+        }
+    }()
+
+    log.Printf("HTTP/WebSocket listening on %s", *addrHTTP)
+    log.Fatal(http.ListenAndServe(*addrHTTP, nil))
 } 
