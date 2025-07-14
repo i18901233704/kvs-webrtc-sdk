@@ -90,7 +90,9 @@ func getRoom(name string) *Room {
 func (p *Peer) writeLoop() {
     for msg := range p.send {
         log.Printf("WS Send To: %s %s", p.uid, msg)
-        _ = p.conn.WriteMessage(websocket.TextMessage, msg)
+        if err := p.conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+            log.Printf("[ERR] WS write to %s: %v", p.uid, err)
+        }
     }
 }
 
@@ -105,11 +107,14 @@ func (p *Peer) readLoop() {
         if err != nil {
             return
         }
-        log.Printf("WS Recv From: %s %s", p.uid, data)
+        log.Printf("WS Recv From: %s %s \n", p.uid, data)
         var sig Signal
         if err := json.Unmarshal(data, &sig); err != nil {
+            log.Println("json error:", err.Error())
             continue
         }
+        log.Println("begin switch")
+        log.Println(sig)
         switch sig.Type {
         case "JOIN":
             p.handleJoin(sig)
@@ -130,7 +135,15 @@ func (p *Peer) readLoop() {
 func (p *Peer) handleJoin(sig Signal) {
     if strings.ToLower(sig.Role) == "kvs" {
         p.isKvsMaster = true
-        p.room.setMaster(p)
+        if err := p.room.setMaster(p); err != nil {
+            log.Printf("[WARN] Room %s already has a master, rejecting new master %s", p.room.name, p.uid)
+            return
+        }
+        // 如果 JOIN 消息附带 SDP，则视为 master 的初始 Offer
+        if sig.SDP != "" {
+            log.Printf("recv sdp from : %s", sig.UID)
+            p.handleOffer(sig)
+        }
     } else {
         p.room.addViewer(p)
     }
@@ -139,11 +152,15 @@ func (p *Peer) handleJoin(sig Signal) {
 /******** SDP 处理 ********/
 
 func (p *Peer) handleOffer(sig Signal) {
+    log.Printf("handleOffer 11111")
     if p.isKvsMaster {
+        log.Printf("handleOffer 222")
         // KVS master -> 我们 viewer
         p.pc = newPeerConnection()
+        log.Printf("handleOffer 333")
         p.pc.OnICECandidate(func(c *webrtc.ICECandidate) {
             if c == nil {
+                log.Printf("handleOffer 4444")
                 return
             }
             payload, _ := json.Marshal(Signal{
@@ -154,7 +171,9 @@ func (p *Peer) handleOffer(sig Signal) {
             })
             p.send <- payload
         })
+        log.Printf("handleOffer 55555")
         p.pc.OnTrack(func(remote *webrtc.TrackRemote, recv *webrtc.RTPReceiver) {
+            log.Printf("handleOffer 66666")
             _ = recv
             key := fmt.Sprintf("%s_%d", remote.Kind().String(), remote.SSRC())
             rt, _ := p.room.getOrCreateRelay(remote, key)
@@ -175,13 +194,26 @@ func (p *Peer) handleOffer(sig Signal) {
                 _ = rt.WriteRTP(pkt)
             }
         })
-
-        _ = p.pc.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: sig.SDP})
-        answer, _ := p.pc.CreateAnswer(nil)
-        _ = p.pc.SetLocalDescription(answer)
-
-        resp, _ := json.Marshal(Signal{Type: "SDP_ANSWER", Room: sig.Room, UID: p.uid, SDP: answer.SDP})
-        p.send <- resp
+        log.Printf("111111111")
+        if err := p.pc.SetRemoteDescription(webrtc.SessionDescription{
+            Type: webrtc.SDPTypeOffer, SDP: sig.SDP}); err != nil {
+            log.Printf("[ERR] SetRemoteDescription: %v", err)
+            return
+        }
+        log.Printf("22222222")
+        answer, err := p.pc.CreateAnswer(nil)
+        if err != nil {
+            log.Printf("[ERR] CreateAnswer: %v", err)
+            return
+        }
+        log.Printf("333333333")
+        if err := p.pc.SetLocalDescription(answer); err != nil {
+            log.Printf("[ERR] SetLocalDescription: %v", err)
+            return
+        }
+        log.Printf("Send SDP_ANSWER to %s (len=%d)", p.uid, len(answer.SDP))
+        payload, _ := json.Marshal(Signal{Type: "SDP_ANSWER", Room: sig.Room, UID: p.uid, SDP: answer.SDP})
+        p.send <- payload
     } else {
         // viewer 收到 offer（正常流程由 viewer 发 offer，这里忽略）
     }
@@ -204,13 +236,17 @@ func (p *Peer) handleCandidate(sig Signal) {
 
 /******** Room helpers ********/
 
-func (r *Room) setMaster(p *Peer) {
-    r.lock.Lock()
+func (r *Room) setMaster(p *Peer) error {
+    r.lock.Lock(); 
     defer r.lock.Unlock()
-    if r.master != nil {
+    if r.master != nil && r.master.conn != nil {
+        // 先广播 BUSY，或直接关闭旧连接
+        r.lock.Unlock();
         r.master.closePeer()
+        r.lock.Lock()
     }
     r.master = p
+    return nil
 }
 
 func (r *Room) addViewer(p *Peer) {
@@ -229,12 +265,35 @@ func (p *Peer) closePeer() {
     r.lock.Lock()
     defer r.lock.Unlock()
 
+    // ------ 当当前 Peer 是 master 且正在离开 ------
     if p.isKvsMaster && r.master == p {
+        // 清空 master 引用
         r.master = nil
+
+        // 清空房间内现有的中继 track，确保不会把过期的 track 继续推送给 viewer
+        r.relayTracks = map[string]*webrtc.TrackLocalStaticRTP{}
+
+        // 遍历所有 viewer：只关闭其 PeerConnection，保留 WebSocket send 通道
         for _, v := range r.viewers {
-            v.closePeer()
+            if v.pc != nil {
+                _ = v.pc.Close()
+                v.pc = nil
+            }
+            // 如有需要，可向 viewer 发送自定义事件通知流已重置
+            // payload, _ := json.Marshal(Signal{Type: "STREAM_RESET", Room: r.name})
+            // v.send <- payload
         }
-    } else if !p.isKvsMaster {
+
+        // 关闭 master 自身的资源
+        if p.pc != nil {
+            _ = p.pc.Close()
+        }
+        close(p.send)
+        return
+    }
+
+    // ------ 普通 viewer 离开 ------
+    if !p.isKvsMaster {
         delete(r.viewers, p.uid)
     }
     if p.pc != nil {
@@ -259,12 +318,22 @@ func (r *Room) getOrCreateRelay(remote *webrtc.TrackRemote, key string) (*webrtc
     r.relayTracks[key] = rt
     // 将 relay track 添加到已有 viewer 的 PC
     for _, v := range r.viewers {
+        // 在 getOrCreateRelay 里，viewer 已有 pc 的情况
         if v.pc != nil {
-            // 已有 PeerConnection 则直接添加 track
             _, _ = v.pc.AddTrack(rt)
+
+            // 重新协商，把新 track 告知 viewer
+            offer, _ := v.pc.CreateOffer(nil)
+            _ = v.pc.SetLocalDescription(offer)
+            payload, _ := json.Marshal(Signal{
+                Type: "SDP_OFFER",
+                Room: r.name,
+                UID:  v.uid,
+                SDP:  offer.SDP,
+            })
+            v.send <- payload
         } else {
-            // 首次有媒体轨时，尚未建立 PeerConnection 的 viewer 主动协商
-            v.sendOffer(r)
+            v.sendOffer(r) // 首次建立连接的分支保持不变
         }
     }
     return rt, nil

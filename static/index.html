@@ -7,7 +7,7 @@
   /* ----------- 参数自行调整 ----------- */
   const room   = 'demo';               // 与 Master 一致
   const uid    = 'viewer_' + Math.random().toString(36).substr(2, 6);
-  const wsUrl  = `ws://127.0.0.1:8080/ws?room=${room}&uid=${uid}&role=viewer3`;
+  const wsUrl  = `wss://127.0.0.1:8080/ws?room=${room}&uid=${uid}&role=viewer3`;
 
   /* -------- WebSocket 信令 -------- */
   const ws = new WebSocket(wsUrl);

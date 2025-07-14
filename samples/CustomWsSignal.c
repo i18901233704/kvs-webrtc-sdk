@@ -141,17 +141,15 @@ static int wsCallback(struct lws* wsi, enum lws_callback_reasons reason,
     switch(reason) {
     case LWS_CALLBACK_CLIENT_ESTABLISHED: {
         gWsi = wsi;
-        wsSend("{\"type\":\"JOIN\",\"room\":\"%s\",\"uid\":\"%s\",\"role\":\"kvs\"}", gRoom, gUid);
+        // 一次发送 JOIN 并携带 sdp，避免同一回调内多次 lws_write
         RtcSessionDescriptionInit offer; MEMSET(&offer, 0, SIZEOF(offer));
         createOffer(gPc, &offer);
         setLocalDescription(gPc, &offer);
-        size_t escLen = STRLEN(offer.sdp)*2 + 1;
+        size_t escLen = STRLEN(offer.sdp) * 2 + 1;
         char* esc = (char*) malloc(escLen);
-        if (esc == NULL) {
-            DLOGE("[Master] malloc esc failed");
-            break; }
+        if (esc == NULL) { DLOGE("[Master] malloc esc failed"); break; }
         jsonEscape(offer.sdp, esc, escLen);
-        wsSend("{\"type\":\"SDP_OFFER\",\"room\":\"%s\",\"uid\":\"%s\",\"sdp\":\"%s\"}", gRoom, gUid, esc);
+        wsSend("{\"type\":\"JOIN\",\"room\":\"%s\",\"uid\":\"%s\",\"role\":\"kvs\",\"sdp\":\"%s\"}", gRoom, gUid, esc);
         free(esc);
         break; }
     case LWS_CALLBACK_CLIENT_RECEIVE: {
